@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import fcntl
 import json
@@ -381,6 +382,87 @@ class ProfileManager:
                     imported_count += 1
                 except Exception as e:
                     print(f"[import] Skipping keychain account: {e}")
+
+        return imported_count
+
+    def export_bundle(self, output_path: Optional[Path] = None) -> Path:
+        """Export all registered profile credentials into a portable, importable bundle file."""
+        with self.lock():
+            metadata = self._load_metadata()
+            bundle = {
+                "format": "antigravity-license-bundle-v1",
+                "exported_at": iso_now(),
+                "profiles": []
+            }
+            for pid, pdata in metadata.items():
+                oauth_f = self.profiles_dir / pid / "oauth_creds.json"
+                if oauth_f.exists():
+                    try:
+                        with open(oauth_f, "r", encoding="utf-8") as f:
+                            creds = json.load(f)
+                        bundle["profiles"].append({
+                            "id": pid,
+                            "email": pdata.get("email"),
+                            "name": pdata.get("name"),
+                            "picture": pdata.get("picture", ""),
+                            "creds": creds,
+                            "status": pdata.get("status", "ready"),
+                        })
+                    except Exception:
+                        pass
+
+            if not output_path:
+                output_path = Path.home() / "antigravity_licenses.bundle"
+
+            raw_json = json.dumps(bundle, indent=2)
+            payload = {
+                "type": "AGY_LICENSE_BUNDLE",
+                "version": 1,
+                "exported_at": iso_now(),
+                "count": len(bundle["profiles"]),
+                "data_b64": base64.b64encode(raw_json.encode("utf-8")).decode("ascii")
+            }
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            os.chmod(output_path, 0o600)
+            return output_path
+
+    def import_bundle(self, bundle_path: Path) -> int:
+        """Import all profile credentials from a license bundle file."""
+        with open(bundle_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        bundle_obj = None
+        if "data_b64" in data:
+            raw_json = base64.b64decode(data["data_b64"]).decode("utf-8")
+            bundle_obj = json.loads(raw_json)
+        elif "profiles" in data:
+            bundle_obj = data
+        else:
+            raise ValueError("Nieprawidłowy format pliku paczki licencji.")
+
+        imported_count = 0
+        for item in bundle_obj.get("profiles", []):
+            creds = item.get("creds", {})
+            if creds.get("refresh_token") or creds.get("access_token"):
+                creds["email"] = item.get("email") or creds.get("email")
+                creds["name"] = item.get("name") or creds.get("name")
+                creds["picture"] = item.get("picture", "")
+                pid = item.get("id") or sanitize_id(creds["email"].split("@")[0])
+                try:
+                    self.add_or_update_profile(creds, custom_id=pid)
+                    imported_count += 1
+                except Exception as e:
+                    print(f"[import] Error importing '{pid}': {e}")
+
+        # Refresh imported accounts and set the best Pro profile as active
+        try:
+            self.refresh_all()
+            best = self.find_best_profile()
+            if best:
+                self.switch_profile(best["id"])
+        except Exception:
+            pass
 
         return imported_count
 

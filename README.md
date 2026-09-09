@@ -112,10 +112,16 @@ agy-switch add
 # 6. Force immediate token refresh and live quota sync from Google
 agy-switch refresh
 
-# 7. Remove an account from the pool
+# 7. Export all licenses to a portable bundle file (for sharing across machines/teammates)
+agy-switch export licenses.bundle
+
+# 8. Import all licenses from a bundle file (1-click access, zero browser logins needed)
+agy-switch import licenses.bundle
+
+# 9. Remove an account from the pool
 agy-switch remove myaccount@gmail.com
 
-# 8. Launch Web Dashboard
+# 10. Launch Web Dashboard
 agy-hub
 ```
 

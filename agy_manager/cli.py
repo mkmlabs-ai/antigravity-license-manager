@@ -160,6 +160,45 @@ def cmd_auto_rotate(pm: ProfileManager):
         print(f"\n{GREEN}✓ {res.get('reason')}{RST} Aktywne konto: {BOLD}{res.get('active_email') or res.get('active_id')}{RST}\n")
 
 
+def cmd_export(pm: ProfileManager, path_str: Optional[str] = None):
+    out_p = Path(path_str).expanduser() if path_str else Path.home() / "antigravity_licenses.bundle"
+    print(f"\n{CYAN}Eksportowanie wszystkich zarejestrowanych licencji Google do paczki...{RST}")
+    try:
+        saved = pm.export_bundle(out_p)
+        print(f"\n{GREEN}✓ Pomyślnie wyeksportowano licencje do pliku:{RST} {BOLD}{saved}{RST}")
+        print(f"{DIM}Możesz przesłać ten plik (np. Matiemu), aby mógł zaimportować wszystkie konta 1 poleceniem:{RST}")
+        print(f"  {BOLD}agy-switch import {saved.name}{RST}\n")
+    except Exception as e:
+        print(f"\n{RED}✗ Błąd podczas eksportu: {e}{RST}\n", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_import(pm: ProfileManager, path_str: Optional[str] = None):
+    if not path_str:
+        default_p = Path.home() / "antigravity_licenses.bundle"
+        if default_p.exists():
+            path_str = str(default_p)
+        else:
+            print(f"{RED}Podaj ścieżkę do pliku paczki licencji: agy-switch import <ścieżka/do/pliku.bundle>{RST}")
+            return
+
+    bundle_p = Path(path_str).expanduser()
+    if not bundle_p.exists():
+        print(f"{RED}Plik '{bundle_p}' nie istnieje.{RST}")
+        sys.exit(1)
+
+    print(f"\n{CYAN}Importowanie licencji z pliku paczki: {bundle_p}...{RST}")
+    try:
+        count = pm.import_bundle(bundle_p)
+        active = pm.get_active_id()
+        prof = pm.get_profile(active) if active else None
+        print(f"\n{GREEN}✓ Pomyślnie zaimportowano {count} licencji Google!{RST}")
+        print(f"{GREEN}✓ Aktywowano optymalne konto Pro:{RST} {BOLD}{prof.get('email') if prof else active}{RST} (ID: {active})\n")
+    except Exception as e:
+        print(f"\n{RED}✗ Błąd podczas importu: {e}{RST}\n", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     pm = ProfileManager()
     args = sys.argv[1:]
@@ -179,6 +218,12 @@ def main():
         cmd_best(pm)
     elif cmd in ["auto", "rotate", "auto-rotate"]:
         cmd_auto_rotate(pm)
+    elif cmd in ["export", "bundle-export"]:
+        path_arg = args[1] if len(args) > 1 else None
+        cmd_export(pm, path_arg)
+    elif cmd in ["import", "import-bundle", "bundle-import"]:
+        path_arg = args[1] if len(args) > 1 else None
+        cmd_import(pm, path_arg)
     elif cmd in ["daemon"]:
         interval = 60
         if len(args) > 1 and args[1].isdigit():
@@ -196,7 +241,7 @@ def main():
         else:
             cmd_interactive_switch(pm)
     elif cmd in ["-h", "--help", "help"]:
-        print("Użycie: agy-switch [list | best | auto | refresh | switch <id> | add | ui | daemon]")
+        print("Użycie: agy-switch [list | best | auto | refresh | switch <id> | add | export | import <file> | ui | daemon]")
     else:
         cmd_switch(pm, cmd)
 
