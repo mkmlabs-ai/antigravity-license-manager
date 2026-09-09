@@ -16,13 +16,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .auth import run_oauth_login_flow
+from .auth import copy_to_clipboard, get_oauth_auth_url, run_oauth_login_flow
 from .profiles import ProfileManager
 
 # Global state for asynchronous login flow
 _OAUTH_FLOW_STATE: Dict[str, Any] = {
     "in_progress": False,
     "status": "idle",
+    "auth_url": None,
     "email": None,
     "error": None,
     "started_at": 0,
@@ -490,13 +491,39 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <!-- Login Modal -->
     <div class="modal-overlay" id="login-modal">
-        <div class="modal">
-            <div class="spinner"></div>
-            <h3 style="font-size: 16px;">Oczekiwanie na autoryzację Google...</h3>
-            <p style="font-size: 13px; color: var(--text-dim);">
-                Otwarto okno logowania w przeglądarce. Zaloguj się na wybrane konto Google.
+        <div class="modal" style="max-width: 500px; text-align: left; gap: 14px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <h3 style="font-size: 16px; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 8px;">
+                    <span style="color: var(--accent);">&#x2726;</span> Dodawanie konta Google
+                </h3>
+                <span class="badge" style="background: rgba(56, 189, 248, 0.1); color: var(--accent); border-color: rgba(56, 189, 248, 0.3);">Ego / Dowolna przeglądarka</span>
+            </div>
+            
+            <p style="font-size: 13px; color: var(--text-dim); line-height: 1.4;">
+                Otwórz logowanie bezpośrednio w nowej karcie tej przeglądarki (Ego) lub skopiuj link i wklej w wybranym profilu:
             </p>
-            <button onclick="cancelAddAccount()" style="margin-top: 8px;">Anuluj</button>
+
+            <div style="display: flex; flex-direction: column; gap: 10px; margin: 4px 0;">
+                <a id="btn-open-auth-link" href="#" target="_blank" class="primary button" style="text-decoration: none; padding: 11px 16px; font-weight: 600; justify-content: center; font-size: 13px; background: linear-gradient(135deg, #2563eb, #3b82f6); border-radius: 8px; box-shadow: 0 4px 14px rgba(37,99,235,0.3); color: #fff; display: flex; align-items: center; gap: 8px;">
+                    &#x1f310; Otwórz w nowej karcie tej przeglądarki (Ego)
+                </a>
+                <button onclick="copyAuthUrl()" id="btn-copy-auth" style="padding: 10px 16px; font-weight: 500; justify-content: center; background: rgba(56, 189, 248, 0.08); border-color: rgba(56, 189, 248, 0.25); color: var(--accent);">
+                    &#x1f4cb; Kopiuj link autoryzacji do schowka
+                </button>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+                <label style="font-size: 11px; color: var(--text-dark); text-transform: uppercase; font-weight: 600;">Link autoryzacyjny:</label>
+                <input id="auth-url-input" type="text" readonly onclick="copyAuthUrl()" style="width: 100%; background: #0c0e14; border: 1px solid var(--border); padding: 8px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); cursor: pointer;" title="Kliknij, aby skopiować" />
+            </div>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px;">
+                <div style="display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px;">
+                    <div class="spinner" style="width: 14px; height: 14px; border-width: 2px; margin: 0;"></div>
+                    <span id="auth-status-text">Oczekiwanie na autoryzację...</span>
+                </div>
+                <button onclick="cancelAddAccount()" style="color: var(--text-dark); background: transparent; border-color: transparent; padding: 6px 12px;">Anuluj</button>
+            </div>
         </div>
     </div>
 
@@ -731,10 +758,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         async function startAddAccount() {
             document.getElementById('login-modal').style.display = 'flex';
+            document.getElementById('auth-status-text').textContent = 'Generowanie linku autoryzacji...';
+            document.getElementById('auth-url-input').value = 'Ładowanie...';
+            document.getElementById('btn-open-auth-link').href = '#';
+
             try {
                 const res = await fetch('/api/start-add-account', { method: 'POST' });
                 const data = await res.json();
-                if (data.success) {
+                if (data.success && data.auth_url) {
+                    document.getElementById('auth-url-input').value = data.auth_url;
+                    document.getElementById('btn-open-auth-link').href = data.auth_url;
+                    document.getElementById('auth-status-text').textContent = 'Oczekiwanie na autoryzację w Google...';
+                    pollLoginStatus();
+                } else if (data.success) {
                     pollLoginStatus();
                 } else {
                     showToast('Błąd: ' + data.error);
@@ -746,12 +782,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
         }
 
+        function copyAuthUrl() {
+            const input = document.getElementById('auth-url-input');
+            if (input && input.value && input.value !== 'Ładowanie...') {
+                navigator.clipboard.writeText(input.value).then(() => {
+                    showToast('✓ Skopiowano link autoryzacji do schowka!');
+                }).catch(() => {
+                    input.select();
+                    document.execCommand('copy');
+                    showToast('✓ Skopiowano link do schowka!');
+                });
+            }
+        }
+
         function pollLoginStatus() {
             if (pollLoginInterval) clearInterval(pollLoginInterval);
             pollLoginInterval = setInterval(async () => {
                 try {
                     const res = await fetch('/api/add-account-status');
                     const data = await res.json();
+                    if (data.auth_url && document.getElementById('btn-open-auth-link').href === window.location.href + '#') {
+                        document.getElementById('auth-url-input').value = data.auth_url;
+                        document.getElementById('btn-open-auth-link').href = data.auth_url;
+                    }
                     if (data.status === 'success') {
                         clearInterval(pollLoginInterval);
                         document.getElementById('login-modal').style.display = 'none';
@@ -904,13 +957,15 @@ class HubHTTPHandler(BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": str(e)}, 500)
 
         elif parsed.path == "/api/start-add-account":
+            auth_url = get_oauth_auth_url(port=8086)
             if _OAUTH_FLOW_STATE["in_progress"] and time.time() - _OAUTH_FLOW_STATE["started_at"] < 90:
-                self.send_json({"success": True, "status": "already_in_progress"})
+                self.send_json({"success": True, "status": "already_in_progress", "auth_url": auth_url})
                 return
 
             _OAUTH_FLOW_STATE = {
                 "in_progress": True,
                 "status": "waiting_browser",
+                "auth_url": auth_url,
                 "email": None,
                 "error": None,
                 "started_at": time.time(),
@@ -919,11 +974,12 @@ class HubHTTPHandler(BaseHTTPRequestHandler):
             def bg_oauth_worker():
                 global _OAUTH_FLOW_STATE
                 try:
-                    creds = run_oauth_login_flow(port=8086)
+                    creds = run_oauth_login_flow(port=8086, open_browser=False)
                     pid = self.pm.add_or_update_profile(creds)
                     _OAUTH_FLOW_STATE = {
                         "in_progress": False,
                         "status": "success",
+                        "auth_url": None,
                         "email": creds.get("email"),
                         "id": pid,
                         "error": None,
@@ -933,6 +989,7 @@ class HubHTTPHandler(BaseHTTPRequestHandler):
                     _OAUTH_FLOW_STATE = {
                         "in_progress": False,
                         "status": "error",
+                        "auth_url": None,
                         "email": None,
                         "error": str(e),
                         "started_at": 0,
@@ -940,7 +997,7 @@ class HubHTTPHandler(BaseHTTPRequestHandler):
 
             t = threading.Thread(target=bg_oauth_worker, daemon=True)
             t.start()
-            self.send_json({"success": True, "status": "started"})
+            self.send_json({"success": True, "status": "started", "auth_url": auth_url})
 
         elif parsed.path == "/api/cancel-add-account":
             _OAUTH_FLOW_STATE = {

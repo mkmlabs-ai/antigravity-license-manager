@@ -218,8 +218,8 @@ def sync_active_gemini_files(creds: Dict[str, Any], email: Optional[str] = None)
     set_macos_keychain_token(oauth_data)
 
 
-def run_oauth_login_flow(port: int = 8085) -> Dict[str, Any]:
-    """Interactive OAuth login flow in browser to authorize a new Google account."""
+def get_oauth_auth_url(port: int = 8086) -> str:
+    """Generate the full Google OAuth authorization URL for the specified callback port."""
     redirect_uri = f"http://localhost:{port}/oauth/callback"
     auth_params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -229,7 +229,36 @@ def run_oauth_login_flow(port: int = 8085) -> Dict[str, Any]:
         "access_type": "offline",
         "prompt": "consent select_account",
     }
-    auth_url = f"{OAUTH_AUTH_URL}?{urllib.parse.urlencode(auth_params)}"
+    return f"{OAUTH_AUTH_URL}?{urllib.parse.urlencode(auth_params)}"
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to macOS clipboard using pbcopy if available."""
+    if sys.platform == "darwin":
+        try:
+            p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p.communicate(input=text.encode("utf-8"), timeout=1.0)
+            return p.returncode == 0
+        except Exception:
+            return False
+    return False
+
+
+def run_oauth_login_flow(
+    port: int = 8086,
+    open_browser: bool = True,
+    on_auth_url_ready: Optional[Any] = None
+) -> Dict[str, Any]:
+    """Interactive OAuth login flow to authorize a new Google account."""
+    redirect_uri = f"http://localhost:{port}/oauth/callback"
+    auth_url = get_oauth_auth_url(port=port)
+    copy_to_clipboard(auth_url)
+
+    if on_auth_url_ready and callable(on_auth_url_ready):
+        try:
+            on_auth_url_ready(auth_url)
+        except Exception:
+            pass
 
     auth_code_holder: Dict[str, Any] = {"code": None, "error": None}
 
@@ -249,10 +278,16 @@ def run_oauth_login_flow(port: int = 8085) -> Dict[str, Any]:
                     self.wfile.write(b"""
                     <html>
                     <head><title>Zalogowano pomyslnie</title></head>
-                    <body style="background:#111;color:#eee;font-family:sans-serif;text-align:center;padding:50px;">
-                        <h1 style="color:#6ee7b7;">&#x2713; Autoryzacja udana!</h1>
-                        <p>Konto Google zostalo pomyslnie podlaczone do Antigravity License Hub.</p>
-                        <p style="color:#888;">Mozesz zamknac te karte przegladarki.</p>
+                    <body style="background:#0c0e14;color:#f1f5f9;font-family:system-ui,-apple-system,sans-serif;text-align:center;padding:60px 20px;">
+                        <div style="display:inline-block;background:#151821;border:1px solid #262c3d;padding:32px 40px;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+                            <div style="font-size:48px;margin-bottom:16px;">&#x2705;</div>
+                            <h1 style="color:#4ade80;font-size:22px;margin-bottom:8px;">Autoryzacja udana!</h1>
+                            <p style="color:#94a3b8;font-size:14px;margin-bottom:20px;">Konto Google zostalo pomyslnie podlaczone do Antigravity License Hub.</p>
+                            <p style="color:#64748b;font-size:12px;">Ta karta zamknie sie automatycznie za 3 sekundy...</p>
+                        </div>
+                        <script>
+                            setTimeout(() => { window.close(); }, 3000);
+                        </script>
                     </body>
                     </html>
                     """)
@@ -268,16 +303,18 @@ def run_oauth_login_flow(port: int = 8085) -> Dict[str, Any]:
                 self.end_headers()
 
     server = HTTPServer(("localhost", port), OAuthHandler)
-    server.timeout = 120
+    server.timeout = 180
 
-    print(f"\n[OAuth] Otwieram przegladarke do autoryzacji konta Google...\n{auth_url}\n")
-    try:
-        webbrowser.open(auth_url)
-    except Exception:
-        pass
+    if open_browser:
+        print(f"\n[OAuth] Link autoryzacyjny Google:\n{auth_url}\n")
+        print("📋 Link został automatycznie skopiowany do Twojego schowka!")
+        try:
+            webbrowser.open(auth_url)
+        except Exception:
+            pass
 
     start_t = time.time()
-    while time.time() - start_t < 120 and auth_code_holder["code"] is None and auth_code_holder["error"] is None:
+    while time.time() - start_t < 180 and auth_code_holder["code"] is None and auth_code_holder["error"] is None:
         server.handle_request()
 
     server.server_close()
@@ -285,7 +322,7 @@ def run_oauth_login_flow(port: int = 8085) -> Dict[str, Any]:
     if auth_code_holder["error"]:
         raise RuntimeError(f"OAuth failed: {auth_code_holder['error']}")
     if not auth_code_holder["code"]:
-        raise TimeoutError("OAuth timeout: nie otrzymano kodu autoryzacyjnego w ciagu 120s.")
+        raise TimeoutError("OAuth timeout: nie otrzymano kodu autoryzacyjnego w ciagu 180s.")
 
     # Exchange code for tokens
     code = auth_code_holder["code"]
