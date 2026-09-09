@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+import sys
+import webbrowser
+from pathlib import Path
+
+pkg_dir = Path.home() / ".local/share/agy-manager"
+if str(pkg_dir) not in sys.path:
+    sys.path.insert(0, str(pkg_dir))
+
+from agy_manager.web_server import start_server
+
+if __name__ == "__main__":
+    port = 3099
+    print(f"Opening Antigravity License Hub: http://127.0.0.1:{port}")
+    try:
+        webbrowser.open(f"http://127.0.0.1:{port}")
+    except Exception:
+        pass
+    start_server(port=port, background=False)

@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Runtime data & logs (stored in ~/.config/agy-switcher)
+*.log
+*.db
+*.db-wal
+*.db-shm
+*.tmp
+*.bak
+
+# Sensitive tokens & credentials (NEVER commit)
+oauth_creds.json
+google_accounts.json
+profiles.json
+manager.lock
+active
+credentials/
+tokens/
+.env*
+secrets*
+
+# Build artifacts
+bin/agy-menubar
+*.o
+*.dylib
