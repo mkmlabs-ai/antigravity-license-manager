@@ -224,6 +224,13 @@ def main():
     elif cmd in ["import", "import-bundle", "bundle-import"]:
         path_arg = args[1] if len(args) > 1 else None
         cmd_import(pm, path_arg)
+    elif cmd in ["bundle", "bandl", "paczka"]:
+        sub = args[1].lower() if len(args) > 1 else "export"
+        path_arg = args[2] if len(args) > 2 else None
+        if sub in ["import", "in", "load"]:
+            cmd_import(pm, path_arg)
+        else:
+            cmd_export(pm, path_arg)
     elif cmd in ["daemon"]:
         interval = 60
         if len(args) > 1 and args[1].isdigit():
