@@ -45,6 +45,25 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
+def _preserved(existing_quota, now_dt, err):
+    """Ostatnie znane limity, gdy Google nie odpowiada; kubelki po czasie resetu wracaja do 100%."""
+    if not existing_quota or not isinstance(existing_quota, dict) or "gemini_5h" not in existing_quota:
+        return None
+    kept = json.loads(json.dumps(existing_quota))
+    for b_name in ["gemini_5h", "gemini_weekly", "claude_5h", "claude_weekly"]:
+        b = kept.get(b_name)
+        if not isinstance(b, dict):
+            continue
+        r_dt = parse_iso(b.get("reset_iso"))
+        if r_dt and r_dt <= now_dt:
+            b.update(used_pct=0.0, remaining_pct=100.0, reset_formatted="teraz")
+        elif r_dt:
+            b["reset_formatted"] = format_duration(int((r_dt - now_dt).total_seconds()))
+    kept["source"] = "preserved_after_error"
+    kept["error"] = err
+    return kept
+
+
 def fetch_live_quota_from_google(
     access_token: str,
     email: Optional[str] = None,
@@ -63,38 +82,9 @@ def fetch_live_quota_from_google(
         except Exception:
             pass
 
-    # If local LSP is not currently running for this account, check if we have a valid unexpired quota
-    if existing_quota and isinstance(existing_quota, dict):
-        preserved = dict(existing_quota)
-        has_active_unexpired_usage = False
-        
-        # Check and recalculate reset countdowns for preserved buckets
-        for b_name in ["gemini_5h", "gemini_weekly", "claude_5h", "claude_weekly"]:
-            b_data = preserved.get(b_name)
-            if isinstance(b_data, dict):
-                r_iso = b_data.get("reset_iso")
-                used_val = float(b_data.get("used_pct", 0.0))
-                if r_iso:
-                    r_dt = parse_iso(r_iso)
-                    if r_dt:
-                        diff_sec = int((r_dt - now_dt).total_seconds())
-                        if diff_sec > 0:
-                            b_data["reset_formatted"] = format_duration(diff_sec)
-                            if used_val > 0.0:
-                                has_active_unexpired_usage = True
-                        else:
-                            # Reset time reached: quota has naturally replenished
-                            b_data["used_pct"] = 0.0
-                            b_data["remaining_pct"] = 100.0
-                            b_data["reset_formatted"] = "teraz"
-                elif used_val > 0.0:
-                    # No ISO timestamp but usage recorded -> keep preserved
-                    has_active_unexpired_usage = True
-        
-        if has_active_unexpired_usage:
-            preserved["source"] = "preserved_session"
-            return preserved
-
+    # Zapamietane limity sa tylko zapasem, gdy Google nie odpowie (patrz _preserved).
+    # Wczesniej wygrywaly z Google, a bez reset_iso nie wygasaly nigdy - aktywne konto
+    # z 0% limitu 5h wisialo jako 80% i auto-rotacja nigdy nie przelaczala.
     now_dt = datetime.datetime.now(datetime.timezone.utc)
     cloudaicompanion_proj = "aicode-consumers"
     tier_name = "Starter / Free Quota"
@@ -149,6 +139,7 @@ def fetch_live_quota_from_google(
     claude_weekly_used_pct = 0.0
     claude_weekly_remaining_pct = 100.0
     claude_weekly_reset = "teraz"
+    gemini_5h_reset_iso = gemini_weekly_reset_iso = claude_5h_reset_iso = claude_weekly_reset_iso = None
 
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -183,7 +174,8 @@ def fetch_live_quota_from_google(
                             # If existing quota was exhausted and reset is still in the future, don't overwrite with false 100%
                             if existing_quota and isinstance(existing_quota, dict):
                                 old_5h = existing_quota.get("gemini_5h", {})
-                                if old_5h.get("remaining_pct", 100.0) <= 10.0 and reset_dt and (reset_dt - now_dt).total_seconds() > 60:
+                                old_reset = parse_iso(old_5h.get("reset_iso"))
+                                if old_5h.get("remaining_pct", 100.0) <= 10.0 and old_reset and (old_reset - now_dt).total_seconds() > 60:
                                     gemini_5h_remaining_pct = 0.0
                                     gemini_5h_used_pct = 100.0
                         elif "weekly" in b_id or bucket.get("window") == "weekly":
@@ -198,10 +190,12 @@ def fetch_live_quota_from_google(
                             claude_5h_used_pct = used_pct
                             claude_5h_remaining_pct = rem_pct
                             claude_5h_reset = reset_str
+                            claude_5h_reset_iso = reset_time_str
                         elif "weekly" in b_id or bucket.get("window") == "weekly":
                             claude_weekly_used_pct = used_pct
                             claude_weekly_remaining_pct = rem_pct
                             claude_weekly_reset = reset_str
+                            claude_weekly_reset_iso = reset_time_str
 
             return {
                 "has_pro_license": has_pro,
@@ -212,28 +206,36 @@ def fetch_live_quota_from_google(
                     "used_pct": gemini_5h_used_pct,
                     "remaining_pct": gemini_5h_remaining_pct,
                     "reset_formatted": gemini_5h_reset,
+                    "reset_iso": gemini_5h_reset_iso,
                 },
                 "gemini_weekly": {
                     "available": True,
                     "used_pct": gemini_weekly_used_pct,
                     "remaining_pct": gemini_weekly_remaining_pct,
                     "reset_formatted": gemini_weekly_reset,
+                    "reset_iso": gemini_weekly_reset_iso,
                 },
                 "claude_5h": {
                     "available": claude_has_5h,
                     "used_pct": claude_5h_used_pct,
                     "remaining_pct": claude_5h_remaining_pct,
                     "reset_formatted": claude_5h_reset,
+                    "reset_iso": claude_5h_reset_iso,
                 },
                 "claude_weekly": {
                     "available": True,
                     "used_pct": claude_weekly_used_pct,
                     "remaining_pct": claude_weekly_remaining_pct,
                     "reset_formatted": claude_weekly_reset,
+                    "reset_iso": claude_weekly_reset_iso,
                 },
                 "error": None,
+                "source": "google",
             }
     except urllib.error.HTTPError as e:
+        kept = _preserved(existing_quota, now_dt, f"HTTP {e.code}")
+        if kept:
+            return kept
         return {
             "has_pro_license": has_pro,
             "tier_name": tier_name,
@@ -245,6 +247,9 @@ def fetch_live_quota_from_google(
             "error": f"HTTP {e.code}",
         }
     except Exception as e:
+        kept = _preserved(existing_quota, now_dt, str(e))
+        if kept:
+            return kept
         return {
             "has_pro_license": has_pro,
             "tier_name": tier_name,
