@@ -56,10 +56,10 @@ def run_auto_rotate_check(pm: ProfileManager):
         logging.error("Error during auto-rotate check: %s", e)
 
 
-def run_daemon(interval_seconds: int = 60, token_refresh_interval_sec: int = 900):
+def run_daemon(interval_seconds: int = 60, token_refresh_interval_sec: int = 3600):
     setup_logging()
     logging.info(
-        "Starting AGY License Auto-Rotation Daemon (check every %ds, token refresh every %ds)...",
+        "Starting AGY License Auto-Rotation Daemon (check every %ds, token & usage refresh every %ds / 1h)...",
         interval_seconds,
         token_refresh_interval_sec,
     )
@@ -98,7 +98,7 @@ def run_daemon(interval_seconds: int = 60, token_refresh_interval_sec: int = 900
         # 1. 60s Quota check and auto-rotation
         run_auto_rotate_check(pm)
 
-        # 2. Periodic token refresh pass (every 15 min)
+        # 2. Periodic token refresh & live Google quota query pass (every 1 hour / 3600s)
         if now - last_token_refresh >= token_refresh_interval_sec:
             try:
                 run_single_refresh_pass(pm)
@@ -110,4 +110,4 @@ def run_daemon(interval_seconds: int = 60, token_refresh_interval_sec: int = 900
 
 
 if __name__ == "__main__":
-    run_daemon(interval_seconds=60)
+    run_daemon(interval_seconds=60, token_refresh_interval_sec=3600)

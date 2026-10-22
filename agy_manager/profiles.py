@@ -481,40 +481,129 @@ class ProfileManager:
 
         g5 = u.get("gemini_5h", {})
         gw = u.get("gemini_weekly", {})
+        c5 = u.get("claude_5h", {})
+        cw = u.get("claude_weekly", {})
 
         rem_5h = float(g5.get("remaining_pct", 100.0)) if g5.get("available") else 100.0
         rem_7d = float(gw.get("remaining_pct", 100.0)) if gw.get("available") else 100.0
+        rem_c5 = float(c5.get("remaining_pct", 100.0)) if c5.get("available") else 100.0
+        rem_cw = float(cw.get("remaining_pct", 100.0)) if cw.get("available") else 100.0
 
         # Hard blocks: if 7-day limit is exhausted (<= 5%), account is completely blocked
-        if rem_7d <= 5.0:
+        if rem_7d <= 5.0 or rem_cw <= 5.0:
             return -1000.0
 
         # 5-hour limit exhausted (<= 5%): temporarily blocked
-        if g5.get("available") and rem_5h <= 5.0:
+        if (g5.get("available") and rem_5h <= 5.0) or (c5.get("available") and rem_c5 <= 5.0):
             return -500.0
 
         # Pro tier baseline preference (+5000)
         score = 5000.0
 
         # 7-day limit weight: 10x
-        score += rem_7d * 10.0
+        score += min(rem_7d, rem_cw) * 10.0
 
-        # 5-hour limit weight: 2x
-        score += rem_5h * 2.0
+        # 5-hour limit weight: 5x
+        score += min(rem_5h, rem_c5) * 5.0
+
+        # Token penalty: prefer profiles with less total token consumption
+        tot_m = float(u.get("total_all_time", 0)) / 1e6
+        score -= min(500.0, tot_m * 0.1)
 
         return score
 
+    def find_next_least_used_profile(self) -> Optional[Dict[str, Any]]:
+        """Identify the next eligible Google AI Pro profile with the least overall usage.
+        
+        Sorting criteria:
+        1. Only Pro accounts (Starter accounts excluded).
+        2. Quota health check:
+           - claude_5h remaining > 5% (and gemini_5h if available > 5%)
+           - claude_weekly remaining > 5% (and gemini_weekly > 5%)
+           Exhausted accounts receive heavy penalty rank.
+        3. Usage metrics (lower is better):
+           - max(claude_5h_used, gemini_5h_used)
+           - max(claude_weekly_used, gemini_weekly_used)
+           - tokens in 5h
+           - total tokens all time
+        4. Fair rotation:
+           Among the lowest-usage candidates, pick the one that has been used least recently
+           (oldest last_used timestamp), or if the active profile is candidate 0, advance to candidate 1
+           so that each invocation rotates to the next least-used license.
+        """
+        profiles = self.list_profiles()
+        active_id = self.get_active_id()
+        
+        pro_profiles = [p for p in profiles if p.get("usage", {}).get("has_pro_license")]
+        if not pro_profiles:
+            return profiles[0] if profiles else None
+
+        candidates = []
+        for p in pro_profiles:
+            u = p.get("usage", {})
+            c5 = u.get("claude_5h", {})
+            cw = u.get("claude_weekly", {})
+            g5 = u.get("gemini_5h", {})
+            gw = u.get("gemini_weekly", {})
+
+            c5_used = float(c5.get("used_pct", 0.0))
+            cw_used = float(cw.get("used_pct", 0.0))
+            g5_used = float(g5.get("used_pct", 0.0))
+            gw_used = float(gw.get("used_pct", 0.0))
+
+            c5_rem = float(c5.get("remaining_pct", 100.0)) if c5.get("available") else 100.0
+            cw_rem = float(cw.get("remaining_pct", 100.0)) if cw.get("available") else 100.0
+            g5_rem = float(g5.get("remaining_pct", 100.0)) if g5.get("available") else 100.0
+            gw_rem = float(gw.get("remaining_pct", 100.0)) if gw.get("available") else 100.0
+
+            # Determine blocked status
+            is_blocked = (c5_rem <= 5.0) or (cw_rem <= 5.0) or (g5_rem <= 5.0) or (gw_rem <= 5.0)
+
+            tokens_5h = float(u.get("tokens_5h", 0))
+            total_tokens = float(u.get("total_all_time", 0))
+
+            last_used_str = p.get("last_used")
+            last_used_dt = parse_iso(last_used_str)
+            last_used_ts = last_used_dt.timestamp() if last_used_dt else 0.0
+
+            # Quota usage score: max 5h used + max weekly used
+            quota_usage = max(c5_used, g5_used) * 2.0 + max(cw_used, gw_used) * 3.0
+
+            candidates.append({
+                "profile": p,
+                "is_blocked": is_blocked,
+                "quota_usage": quota_usage,
+                "tokens_5h": tokens_5h,
+                "total_tokens": total_tokens,
+                "last_used_ts": last_used_ts,
+                "is_active": (p["id"] == active_id),
+            })
+
+        # Separate healthy from blocked
+        healthy = [c for c in candidates if not c["is_blocked"]]
+        pool = healthy if healthy else candidates
+
+        # Sort pool by least usage:
+        # 1. quota_bucket (accounts with similar low quota usage grouped together)
+        # 2. last_used_ts ascending (least recently used first -> fair round-robin among least used)
+        # 3. total_tokens ascending
+        pool.sort(key=lambda x: (
+            int(x["quota_usage"] // 15),
+            x["last_used_ts"],
+            x["total_tokens"]
+        ))
+
+        # If the top candidate is currently active and we have multiple candidates with similarly low usage,
+        # pick the next candidate to rotate
+        if len(pool) > 1 and pool[0]["is_active"]:
+            if pool[1]["quota_usage"] <= pool[0]["quota_usage"] + 20.0:
+                return pool[1]["profile"]
+
+        return pool[0]["profile"]
+
     def find_best_profile(self) -> Optional[Dict[str, Any]]:
         """Identify the single best Pro profile with the highest remaining quota and health."""
-        profiles = self.list_profiles()
-        valid_pro = [p for p in profiles if self.score_profile(p) > 0]
-        if not valid_pro:
-            # If all Pro accounts are exhausted, fallback to Pro account with closest reset
-            pro_accounts = [p for p in profiles if p.get("usage", {}).get("has_pro_license")]
-            if pro_accounts:
-                return pro_accounts[0]
-            return profiles[0] if profiles else None
-        return max(valid_pro, key=self.score_profile)
+        return self.find_next_least_used_profile()
 
     def auto_rotate_if_needed(self, threshold_pct: float = 10.0) -> Dict[str, Any]:
         """Check active profile and auto-switch if active profile is near exhaustion or blocked."""
@@ -534,21 +623,26 @@ class ProfileManager:
                 is_pro = u.get("has_pro_license", False)
                 g5 = u.get("gemini_5h", {})
                 gw = u.get("gemini_weekly", {})
+                c5 = u.get("claude_5h", {})
+                cw = u.get("claude_weekly", {})
+
                 rem_5h = float(g5.get("remaining_pct", 100.0)) if g5.get("available") else 100.0
                 rem_7d = float(gw.get("remaining_pct", 100.0)) if gw.get("available") else 100.0
+                rem_c5 = float(c5.get("remaining_pct", 100.0)) if c5.get("available") else 100.0
+                rem_cw = float(cw.get("remaining_pct", 100.0)) if cw.get("available") else 100.0
 
                 if not is_pro:
                     # Active is Starter, rotate to Pro if any Pro account is ready
-                    best_pro = self.find_best_profile()
+                    best_pro = self.find_next_least_used_profile()
                     if best_pro and best_pro.get("usage", {}).get("has_pro_license") and self.score_profile(best_pro) > 0:
                         needs_switch = True
                         switch_reason = "Aktywna licencja to Starter — rotacja na konto Google AI Pro"
-                elif rem_7d <= threshold_pct:
+                elif rem_7d <= threshold_pct or rem_cw <= threshold_pct:
                     needs_switch = True
-                    switch_reason = f"Wyczerpany limit 7-dniowy ({rem_7d:.1f}% zostało)"
-                elif g5.get("available") and rem_5h <= threshold_pct:
+                    switch_reason = f"Wyczerpany limit 7-dniowy ({min(rem_7d, rem_cw):.1f}% zostało)"
+                elif (g5.get("available") and rem_5h <= threshold_pct) or (c5.get("available") and rem_c5 <= threshold_pct):
                     needs_switch = True
-                    switch_reason = f"Wyczerpany limit 5-godzinny ({rem_5h:.1f}% zostało)"
+                    switch_reason = f"Wyczerpany limit 5-godzinny ({min(rem_5h, rem_c5):.1f}% zostało)"
 
             if not needs_switch:
                 return {
@@ -559,7 +653,7 @@ class ProfileManager:
                 }
 
             # Find best Pro candidate
-            best = self.find_best_profile()
+            best = self.find_next_least_used_profile()
             if not best or best["id"] == active_id:
                 return {
                     "switched": False,

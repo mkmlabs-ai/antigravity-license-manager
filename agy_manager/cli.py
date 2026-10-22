@@ -41,8 +41,8 @@ def cmd_list(pm: ProfileManager):
         print(f"{GRAY}Brak zarejestrowanych kont. Użyj: agy-switch add{RST}\n")
         return
 
-    print(f"{'#':<3} {'ID':<15} {'EMAIL':<30} {'TIER':<18} {'GEMINI 5H':<18} {'GEMINI 7D':<18} {'STATUS'}")
-    print(f"{'-'*3} {'-'*15} {'-'*30} {'-'*18} {'-'*18} {'-'*18} {'-'*10}")
+    print(f"{'#':<3} {'ID':<15} {'EMAIL':<30} {'TIER':<16} {'CLAUDE 5H':<16} {'CLAUDE 7D':<16} {'TOKENS':<10} {'STATUS'}")
+    print(f"{'-'*3} {'-'*15} {'-'*30} {'-'*16} {'-'*16} {'-'*16} {'-'*10} {'-'*10}")
 
     for idx, p in enumerate(profiles, 1):
         pid = p["id"]
@@ -53,27 +53,42 @@ def cmd_list(pm: ProfileManager):
 
         tier_col = f"{PURPLE}✦ {tier}{RST}" if is_pro else f"{YELLOW}{tier}{RST}"
 
-        g5 = u.get("gemini_5h", {})
-        gw = u.get("gemini_weekly", {})
-        g5_used = g5.get("used_pct", 0.0)
-        gw_used = gw.get("used_pct", 0.0)
-        r5 = g5.get("reset_formatted", "teraz")
-        rw = gw.get("reset_formatted", "teraz")
+        c5 = u.get("claude_5h", {})
+        cw = u.get("claude_weekly", {})
+        c5_used = float(c5.get("used_pct", 0.0))
+        cw_used = float(cw.get("used_pct", 0.0))
+        rc5 = c5.get("reset_formatted", "teraz")
+        rcw = cw.get("reset_formatted", "teraz")
 
-        if g5.get("available", False):
-            bar5 = f"{format_bar(g5_used, 5)} {g5_used:>4.1f}%"
-        else:
-            bar5 = f"{GRAY}brak 5h{RST}"
-        barw = f"{format_bar(gw_used, 5)} {gw_used:>4.1f}%"
+        bar_c5 = f"{format_bar(c5_used, 5)} {c5_used:>4.1f}%" if c5.get("available") else f"{GRAY}brak 5h{RST}"
+        bar_cw = f"{format_bar(cw_used, 5)} {cw_used:>4.1f}%" if cw.get("available") else f"{GRAY}brak 7d{RST}"
+
+        tot_m = f"{u.get('total_all_time', 0)/1e6:.1f}M"
 
         is_act = p["is_active"]
         stat_str = f"{GREEN}● AKTYWNA{RST}" if is_act else f"{GRAY}○ Gotowa{RST}"
 
-        print(f"{idx:<3} {BOLD}{pid:<15}{RST} {email:<30} {tier_col:<28} {bar5:<26} {barw:<26} {stat_str}")
-        sub_5h = f"Reset 5h: {r5} · " if g5.get("available") else ""
-        print(f"    {DIM}└─ {sub_5h}Reset 7d: {rw} · Claude 7d: {u.get('claude_weekly', {}).get('used_pct', 0.0)}%{RST}")
+        print(f"{idx:<3} {BOLD}{pid:<15}{RST} {email:<30} {tier_col:<26} {bar_c5:<26} {bar_cw:<26} {tot_m:<10} {stat_str}")
+        print(f"    {DIM}└─ Reset Claude 5h: {rc5} · Reset 7d: {rcw} · Gemini 7d: {u.get('gemini_weekly', {}).get('used_pct', 0.0)}%{RST}")
 
     print()
+
+
+def cmd_next_least_used(pm: ProfileManager):
+    """Switch to next eligible Google AI Pro license with least usage."""
+    best = pm.find_next_least_used_profile()
+    if not best:
+        print(f"{YELLOW}Brak dostępnych profili Pro.{RST}", file=sys.stderr)
+        return
+    pm.switch_profile(best["id"])
+    active = pm.get_active_id()
+    prof = pm.get_profile(active) if active else best
+    email = prof.get("email") if prof else active
+    u = prof.get("usage", {})
+    c5 = u.get("claude_5h", {}).get("used_pct", 0.0)
+    cw = u.get("claude_weekly", {}).get("used_pct", 0.0)
+    tot = u.get("total_all_time", 0) / 1e6
+    print(f"{GREEN}✓ Aktywowano konto z najmniejszym zużyciem:{RST} {BOLD}{email}{RST} (ID: {active}, Claude 5h: {c5}%, 7d: {cw}%, {tot:.1f}M tok)")
 
 
 def cmd_switch(pm: ProfileManager, target: str):
@@ -214,6 +229,8 @@ def main():
         cmd_refresh(pm)
     elif cmd in ["add", "login", "new"]:
         cmd_add(pm)
+    elif cmd in ["next-least-used", "next", "least-used", "rotate-least"]:
+        cmd_next_least_used(pm)
     elif cmd in ["best", "optimal"]:
         cmd_best(pm)
     elif cmd in ["auto", "rotate", "auto-rotate"]:

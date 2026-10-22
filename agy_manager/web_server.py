@@ -588,14 +588,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 const c5_used = c5.used_pct || 0;
                 const cw_used = cw.used_pct || 0;
 
-                const isBlocked = (gw_used >= 95.0 || (gw.remaining_pct != null && gw.remaining_pct <= 5.0));
+                const isBlocked5h = (c5.available && (c5_used >= 95.0 || (c5.remaining_pct != null && c5.remaining_pct <= 5.0))) || (g5.available && (g5_used >= 95.0 || (g5.remaining_pct != null && g5.remaining_pct <= 5.0)));
+                const isBlocked7d = (cw_used >= 95.0 || (cw.remaining_pct != null && cw.remaining_pct <= 5.0)) || (gw_used >= 95.0 || (gw.remaining_pct != null && gw.remaining_pct <= 5.0));
+                const isBlocked = isBlocked5h || isBlocked7d;
                 const isBest = (p.id === bestId) && !isBlocked;
 
                 const card = document.createElement('div');
                 card.className = 'card' + (isAct ? ' active' : '') + (isBlocked ? ' blocked-card' : '');
-                if (isBlocked) {
-                    card.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+                if (isBlocked7d) {
+                    card.style.borderColor = 'rgba(239, 68, 68, 0.45)';
                     card.style.background = 'rgba(30, 15, 20, 0.6)';
+                } else if (isBlocked5h) {
+                    card.style.borderColor = 'rgba(245, 158, 11, 0.45)';
+                    card.style.background = 'rgba(35, 25, 12, 0.6)';
                 }
 
                 const initial = (p.name || p.email || 'A')[0].toUpperCase();
@@ -604,7 +609,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 card.innerHTML = `
                     <div class="card-header">
                         <div class="account-info">
-                            <div class="avatar" style="${isBlocked ? 'border: 1px solid var(--red);' : ''}">${avatarContent}</div>
+                            <div class="avatar" style="${isBlocked7d ? 'border: 1px solid var(--red);' : (isBlocked5h ? 'border: 1px solid var(--yellow);' : '')}">${avatarContent}</div>
                             <div class="account-text">
                                 <div class="account-name">${p.name || p.email.split('@')[0]}</div>
                                 <div class="account-email" style="font-weight: 600; color: ${isAct ? 'var(--accent)' : 'var(--text-main)'};">${p.email}</div>
@@ -613,7 +618,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <div class="badges-row">
                             <span class="badge ${isPro ? 'tier-pro' : 'tier-starter'}">${isPro ? '✦ ' + tierName : tierName}</span>
                             ${isAct ? `<span class="badge active">● AKTYWNA</span>` : ''}
-                            ${isBlocked ? `<span class="badge" style="background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5);">⛔ ZABLOKOWANA (0% 7D)</span>` : ''}
+                            ${isBlocked5h ? `<span class="badge" style="background: rgba(245, 158, 11, 0.25); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.5);">⏳ LIMIT 5H (${c5.reset_formatted || g5.reset_formatted || '4h'})</span>` : ''}
+                            ${isBlocked7d ? `<span class="badge" style="background: rgba(239, 68, 68, 0.25); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5);">⛔ ZABLOKOWANA (7D)</span>` : ''}
                             ${(!isAct && isBest) ? `<span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.4);">★ ZALECANA</span>` : ''}
                         </div>
                     </div>
@@ -630,14 +636,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <div class="usage-section">
                         <div class="group-title">
                             <span>✦ Gemini (Flash & Pro)</span>
-                            <span style="font-size: 10px; color: var(--text-dim);">${g5.available ? '5h & Tydzień' : 'Limit Tygodniowy'}</span>
+                            <span style="font-size: 10px; color: var(--text-dim);">${g5.available ? `${g5_used}% 5h · ` : '0% 5h · '}${gw_used}% 7d</span>
                         </div>
 
-                        ${g5.available ? `
                         <div class="usage-item">
                             <div class="usage-item-header">
-                                <span>Limit 5h:</span>
-                                <strong>${g5_used}% zużyte (${g5.remaining_pct != null ? g5.remaining_pct : (100 - g5_used)}% zostało)</strong>
+                                <span>Limit 5h (Gemini):</span>
+                                <strong>${g5.available ? `${g5_used}% zużyte (${g5.remaining_pct != null ? g5.remaining_pct : (100 - g5_used)}% zostało)` : 'Nielimitowany (0% zużyte)'}</strong>
                             </div>
                             <div class="progress-track">
                                 <div class="progress-bar ${getColorClass(g5_used)}" style="width: ${Math.min(100, Math.max(2, g5_used))}%"></div>
@@ -646,12 +651,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                                 <span>Reset 5h za: <strong>${g5.reset_formatted || 'teraz'}</strong></span>
                             </div>
                         </div>
-                        ` : ''}
 
                         <div class="usage-item">
                             <div class="usage-item-header">
                                 <span>Limit Tygodniowy (7d):</span>
-                                <strong style="${isBlocked ? 'color: var(--red);' : ''}">${gw_used}% zużyte (${gw.remaining_pct != null ? gw.remaining_pct : (100 - gw_used)}% zostało)</strong>
+                                <strong style="${gw_used >= 95 ? 'color: var(--red);' : ''}">${gw_used}% zużyte (${gw.remaining_pct != null ? gw.remaining_pct : (100 - gw_used)}% zostało)</strong>
                             </div>
                             <div class="progress-track">
                                 <div class="progress-bar ${getColorClass(gw_used)}" style="width: ${Math.min(100, Math.max(2, gw_used))}%"></div>
@@ -668,8 +672,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                         <div class="usage-item">
                             <div class="usage-item-header">
+                                <span>Claude / GPT Limit 5h:</span>
+                                <strong style="${c5_used >= 95 ? 'color: var(--red);' : ''}">${c5_used}% zużyte (${c5.remaining_pct != null ? c5.remaining_pct : (100 - c5_used)}% zostało)</strong>
+                            </div>
+                            <div class="progress-track">
+                                <div class="progress-bar ${getColorClass(c5_used)}" style="width: ${Math.min(100, Math.max(2, c5_used))}%"></div>
+                            </div>
+                            <div class="usage-footer">
+                                <span>Reset 5h za: <strong>${c5.reset_formatted || 'teraz'}</strong></span>
+                            </div>
+                        </div>
+
+                        <div class="usage-item">
+                            <div class="usage-item-header">
                                 <span>Claude / GPT Limit 7d:</span>
-                                <strong>${cw_used}% zużyte (${cw.remaining_pct != null ? cw.remaining_pct : (100 - cw_used)}% zostało)</strong>
+                                <strong style="${cw_used >= 95 ? 'color: var(--red);' : ''}">${cw_used}% zużyte (${cw.remaining_pct != null ? cw.remaining_pct : (100 - cw_used)}% zostało)</strong>
                             </div>
                             <div class="progress-track">
                                 <div class="progress-bar ${getColorClass(cw_used)}" style="width: ${Math.min(100, Math.max(2, cw_used))}%"></div>
@@ -686,7 +703,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             : (isBest 
                                 ? `<button class="primary btn-switch" style="background: linear-gradient(135deg, #059669, #10b981); border-color: #34d399;" onclick="switchProfile('${p.id}')">&#x26a1; Przełącz na zalecaną</button>`
                                 : (isBlocked 
-                                    ? `<button class="btn-switch" style="opacity: 0.6; cursor: not-allowed;" onclick="switchProfile('${p.id}')">Przełącz mimo blokady (Reset za ${gw.reset_formatted})</button>`
+                                    ? `<button class="btn-switch" style="opacity: 0.6; cursor: not-allowed;" onclick="switchProfile('${p.id}')">Przełącz mimo limitu (${isBlocked5h ? '5h reset: ' + (c5.reset_formatted || 'teraz') : '7d reset: ' + gw.reset_formatted})</button>`
                                     : `<button class="primary btn-switch" onclick="switchProfile('${p.id}')">Przełącz na tę licencję</button>`
                                   )
                               )
